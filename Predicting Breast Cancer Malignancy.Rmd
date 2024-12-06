@@ -1,0 +1,539 @@
+---
+title: 'MAS8404 Statistical Learning for Data Science | Predicting Breast Cancer Malignancy:
+  A Comparative Study of Supervised and Unsupervised Learning Approaches'
+author: 'Monisha Dabbara (Student ID: 240503817)'
+date: "2024-11-16"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Abstract
+
+This study uses cytological features to predict breast tissue malignancy with unsupervised and supervised learning techniques. After cleaning the data, Exploratory Data Analysis (EDA) identified key variables, including Bare.nuclei, Cl.thickness, Cell.shape, Marg.adhesion, and Mitoses, linked to malignancy. Unsupervised learning methods like K-means and hierarchical clustering differentiated benign and malignant samples, with K-means performing best. In the supervised phase, models such as logistic regression with subset selection, Lasso-regularized logistic regression, and discriminant analysis (LDA and QDA) were evaluated. Model performance was assessed using training and testing errors, accuracy, and AUC. Logistic regression with subset selection had a training error of 0.0311 and a testing error of 0.0256. Lasso-regularized logistic regression performed similarly with a training error of 0.0275 and a testing error of 0.0291. LDA and QDA had slightly higher errors. These results suggest Lasso-regularized logistic regression is the most effective model for distinguishing between benign and malignant samples. Further validation is needed. Further validation and adjustments are recommended to improve robustness and generalizability.
+
+## Exploratory data analysis: Data summary
+
+```{r,warning=FALSE,message=FALSE}
+# Load the required package
+library(mlbench)
+library(ggplot2)
+library(gridExtra)
+library(pheatmap)
+library(corrplot)
+library(cluster)
+library(factoextra)
+library(caret)
+library(dplyr)
+
+# Load the BreastCancer dataset
+data("BreastCancer")
+
+# Inspect the size of the data
+dim(BreastCancer)
+
+# Print the first few rows of the dataset
+head(BreastCancer)
+```
+Before starting with EDA, data cleaning was performed, which included converting factors to quantitative variables and removing rows with missing observations.
+
+```{r,warning=FALSE,message=FALSE}
+# local copy of the dataset
+MyBreastCancer <- data.frame(BreastCancer)
+
+# Converting the Factors to Quantitative Variables
+# Convert the 9 cytological characteristics (factor variables) to numeric variables
+MyBreastCancer$Cl.thickness <- as.numeric(as.character(BreastCancer$Cl.thickness))
+MyBreastCancer$Cell.size <- as.numeric(as.character(BreastCancer$Cell.size))
+MyBreastCancer$Cell.shape <- as.numeric(as.character(BreastCancer$Cell.shape))
+MyBreastCancer$Marg.adhesion <- as.numeric(as.character(BreastCancer$Marg.adhesion))
+MyBreastCancer$Epith.c.size <- as.numeric(as.character(BreastCancer$Epith.c.size))
+MyBreastCancer$Bare.nuclei <- as.numeric(as.character(BreastCancer$Bare.nuclei))
+MyBreastCancer$Bl.cromatin <- as.numeric(as.character(BreastCancer$Bl.cromatin))
+MyBreastCancer$Normal.nucleoli <- as.numeric(as.character(BreastCancer$Normal.nucleoli))
+MyBreastCancer$Mitoses <- as.numeric(as.character(BreastCancer$Mitoses))
+
+# For supervised learning method
+# Drop the 'Id' column and create a new data frame with only relevant variables
+
+MyBreastCancer <- MyBreastCancer[, names(MyBreastCancer) != "Id"]
+BreastCancer_supervised <- na.omit(MyBreastCancer)
+
+# Convert the Class column to binary (0 for benign, 1 for malignant)
+MyBreastCancer$Class <- ifelse(BreastCancer$Class == "benign", 0, 1)
+
+# Removed all of the rows where there are missing values
+MyBreastCancer <- na.omit(MyBreastCancer)
+
+# Drop the 'Id' and 'class' column and create a new data frame with only relevant variables
+BreastCancer_unsupervised <- MyBreastCancer[, !(names(MyBreastCancer) %in% c("Id", "Class"))]
+
+# Checking the distribution of the `Class` variable to see if it's imbalanced:
+table(MyBreastCancer$Class)
+``` 
+
+The `MyBreastCancer` dataset contains **444 samples** belonging to the **Benign** category and **239 samples** belonging to the **Malignant** category. This dataset is imbalanced, which could affect model training particularly for classifiers like logistic regression as they may become biased toward the majority class.
+
+```{r,warning=FALSE}
+# Numerical Summaries
+# Group by 'Class' and summarize the data
+descriptive_stats <- MyBreastCancer %>%
+  group_by(Class) %>%
+  summarise(across(where(is.numeric), 
+                   list(mean = mean, sd = sd, median = median), 
+                   na.rm = TRUE))
+
+# View the table
+print(descriptive_stats)
+```
+
+Predictors in benign samples (Class = 0) generally have lower means, medians, and variability, while malignant samples (Class = 1) show higher values and greater heterogeneity.
+
+```{r,warning=FALSE,message=FALSE}
+# The pairs plot below can be used to understand the relationships between the variables.
+# Plot a pairs plot of predictors, colored by the Class variable
+pairs(MyBreastCancer[,1:9], col = MyBreastCancer$Class + 1, pch = 16)
+
+# In this plot: - `0` will represent benign tumors (usually shown in black or dark color). - `1` will represent malignant tumors (usually shown in red or a contrasting color).
+```
+
+The correlation matrix below, indicates that **Cell.size**, **Cell.shape**, **Bl.cromatin**, and **Bare.nuclei** exhibit a strong correlation with each other. In contrast, **Mitoses** shows weaker correlations with most of the other predictors, suggesting it may offer distinct information not reflected by the other features.
+
+```{r,warning=FALSE,message=FALSE}
+# Generate the correlation matrix
+cor_matrix <- cor(BreastCancer_supervised[, -ncol(BreastCancer_supervised)])
+```
+```{r,warning=FALSE,message=FALSE}
+# Install and load corrplot if necessary
+if (!require(corrplot)) install.packages("corrplot")
+# Correlation plot between predictors (optional visualisation with corrplot package)
+
+corrplot(cor_matrix, method="circle", type="upper", tl.col="black")
+```
+```{r,echo=TRUE,fig.height=4,fig.width=8}
+# Plot heatmap with correlation values displayed
+pheatmap(cor_matrix, main="Correlation Heatmap of Predictors", display_numbers=TRUE, number_color="black")
+```
+Boxplots are plotted to compare the distribution of each predictor variable across the classes
+
+```{r,echo=TRUE,warning=FALSE,message=FALSE}
+# Boxplot comparing all attributes across Class
+# Store plots in a list
+box_list <- list()
+
+# Loop through all columns except 'Class'
+for (col in names(BreastCancer_unsupervised)) {  # Exclude 'Class' column from the loop
+  p <- ggplot(BreastCancer_supervised, aes_string(x = "Class", y = col)) +
+    geom_boxplot(fill = "bisque", color = "black") +
+    ggtitle(paste(col, "by Class")) +
+    theme_minimal() +
+    xlab("Class") +
+    ylab(col)
+  box_list[[col]] <- p  # Add each plot to the list
+}
+
+# Display plots in a grid
+do.call(grid.arrange, c(box_list, ncol = 3))
+```
+
+Based on the graph, **Cl.Thickness, Cell.Size, Cell.Shape, Epith.C.Size, Bare.Nuclei**, and **Normal.Nucleoli** show strong relationships with the predictors, effectively separating benign and malignant classes. These variables should be prioritized for classification.
+
+To confirm the significance of each predictor, it would be useful to apply supervised learning methods, such as logistic regression or LDA.
+
+## Exploratory Data Analysis (EDA): Unsupervised learning
+
+To better understand the data, unsupervised machine learning methods were applied, with k-means and hierarchical clustering chosen as the primary models. Both are effective for forming well-defined clusters, which is essential for our goal of distinguishing between benign and malignant tissue samples.
+
+```{r,warning=FALSE,message=FALSE}
+# Convert to a numeric matrix and remove any rows with NA
+bc_data <- BreastCancer_unsupervised
+bc_data <- bc_data[, sapply(bc_data, is.numeric)]
+bc_data <- na.omit(bc_data)
+
+# Check the number of unique data points
+unique_data <- unique(bc_data)
+num_unique <- nrow(unique_data)
+Kmax <- min(10, num_unique)  # Ensure Kmax doesn't exceed number of unique points
+
+# Run k-means clustering
+SS_W <- numeric(Kmax)
+km_fit <- list()
+
+for (K in 1:Kmax) {
+  km_fit[[K]] <- kmeans(bc_data, centers = K, iter.max = 50, nstart = 20)
+  SS_W[K] <- km_fit[[K]]$tot.withinss
+}
+
+# Plot the within-cluster sum of squares to choose optimal K
+plot(1:Kmax, SS_W, type = "b", xlab = "Number of Clusters K", ylab = "Total Within-Cluster SS")
+```
+
+The "elbow" at K = 2 indicates the optimal number of clusters, as increasing K beyond this point results in diminishing reductions in the within-cluster sum of squares (SS).
+
+```{r,warning=FALSE,message=FALSE}
+# K Means Clustering
+# Visualise the clusters (using the first two principal components for visualisation)
+pca <- prcomp(BreastCancer_unsupervised, scale. = TRUE)
+
+# Perform K-means clustering (use predictors only)
+kmeans_result <- kmeans(BreastCancer_unsupervised, centers=2, nstart=25)
+
+# Add the cluster labels to the original data
+BreastCancer_unsupervised$Cluster <- factor(kmeans_result$cluster)
+
+pca_data <- data.frame(pca$x, Cluster = BreastCancer_unsupervised$Cluster)
+
+# Hierarchical Clustering
+# Compute the distance matrix (excluding 'Class')
+dist_matrix <- dist(BreastCancer_unsupervised)
+
+# Perform hierarchical clustering
+hclust_result <- hclust(dist_matrix)
+
+# Cut the dendrogram into 2 clusters
+clusters_hclust <- cutree(hclust_result, k = 2)
+
+# Add the cluster labels to the data
+BreastCancer_unsupervised$Cluster_hclust <- factor(clusters_hclust)
+
+# Visualise clusters (again using PCA for dimensionality reduction)
+pca_data_hclust <- data.frame(pca$x, Cluster = BreastCancer_unsupervised$Cluster_hclust)
+```
+```{r,echo=TRUE}
+# Create the first plot (K-means clustering)
+pca_plot_kmeans <- ggplot(pca_data, aes(PC1, PC2, color = Cluster)) +
+    geom_point() +
+    labs(title = "K-means Clustering with 2 Centers")
+
+# Create the second plot (Hierarchical clustering)
+pca_plot_hclust <- ggplot(pca_data_hclust, aes(PC1, PC2, color = Cluster)) +
+  geom_point() +
+  labs(title = "Hierarchical Clustering with 2 Clusters")
+
+# Arrange both plots side by side
+grid.arrange(pca_plot_kmeans, pca_plot_hclust, nrow = 2)
+```
+
+```{r,warning=FALSE,message=FALSE}
+table(kmeans_result$cluster, MyBreastCancer$Class)
+table(clusters_hclust, MyBreastCancer$Class)
+```
+
+| **Cluster** | **K-Means (benign)** | **K-Means (malignant)** | **Hierarchical (benign)** | **Hierarchical (malignant)** |
+|-------------|----------------------|-------------------------|---------------------------|------------------------------|
+| **1**       | 435                  | 18                      | 441                       | 75                           |
+| **2**       | 9                    | 221                     | 3                         | 164                          |
+By examining the confusion matrix above,
+
+**K-means Clustering:** Cluster 1 mostly contains benign samples (435 benign vs. 18 malignant), while Cluster 2 predominantly consists of malignant samples (221 malignant vs. 9 benign).
+
+**Hierarchical Clustering:** Cluster 1 contains more benign samples (441 benign vs. 75 malignant), but the misclassification rate is higher than in K-means. Cluster 2 includes 164 malignant samples and 3 benign samples incorrectly classified as malignant.
+
+K-means is the better choice for separating benign and malignant tissue, as it achieved a clearer class separation, aligning with the goal of distinguishing between the two. This makes k-means a more reliable method for identifying whether unusual tissue is benign or malignant.
+
+## Results: Supervised Learning
+
+**Split the Data into Training and Testing Sets**
+
+A typical split is to use 70-80% of the data for training and 20-30% for testing. 
+
+I chose 80% for training and 20% for testing as it is suitable to experiment with multiple models and a robust test set for comparison.
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(123)  # For reproducibility
+train_index <- sample(1:nrow(MyBreastCancer), 0.8 * nrow(MyBreastCancer))
+train_data <- MyBreastCancer[train_index, ]
+test_data <- MyBreastCancer[-train_index, ]
+
+## Pick out and scale predictor variables
+X1orig <- train_data[,1:9]
+X1 <- scale(X1orig)
+
+# Pick out response variable
+y <- train_data[, 10]
+
+## Combine to create new data frame
+BreastCancer_data <- data.frame(X1, y)
+
+## Print first few rows:
+head(BreastCancer_data)
+```
+
+Exploring the following classification models:
+
+1.  **Logistic Regression with Subset Selection**
+2.  **Regularized Logistic Regression (Lasso)**
+3.  **Discriminant Analysis Methods (LDA and QDA)**
+
+### Logistic Regression with Subset Selection
+
+Best subset selection is conducted on the training set to identify the optimal set of predictors. 
+
+Best subset selection can be applied using criteria such as AIC and BIC.
+```{r,warning=FALSE,message=FALSE}
+## Load the bestglm package
+library(bestglm)
+train_data_glm <- data.frame(train_data[,1:10])
+## Apply best subset selection
+bss_fit_AIC <- bestglm(train_data_glm, family = binomial, IC = "AIC")
+bss_fit_BIC <- bestglm(train_data_glm, family = binomial, IC = "BIC")
+bss_fit_AIC$Subsets
+bss_fit_BIC$Subsets
+
+## Store n and p
+n <- nrow(train_data_glm); p <- ncol(train_data_glm) - 1
+```
+The models minimising the AIC and BIC are highlighted in below figure,
+
+```{r,warning=FALSE,message=FALSE}
+(best_AIC <- bss_fit_AIC$ModelReport$Bestk)
+(best_BIC <- bss_fit_BIC$ModelReport$Bestk)
+```
+
+```{r,echo=TRUE}
+## Produce plots, highlighting optimal value of k
+plot(0:p, bss_fit_AIC$Subsets$AIC, xlab = "Number of predictors", ylab = "AIC", type = "b")
+points(best_AIC, bss_fit_AIC$Subsets$AIC[best_AIC+1], col = "red", pch = 16)
+plot(0:p, bss_fit_BIC$Subsets$BIC, xlab = "Number of predictors", ylab = "BIC", type = "b")
+points(best_BIC, bss_fit_BIC$Subsets$BIC[best_BIC+1], col = "red", pch = 16)
+```
+
+As depicted in the above figures, AIC agrees on 7 while BIC agrees on 5, so 6 subset of predictors is likely the best choice for the analysis. This subset is now used to build the final logistic regression model.
+
+```{r,warning=FALSE,message=FALSE}
+pstar <- 6
+## Check which predictors are in the model
+bss_fit_AIC$Subsets[pstar+1, ]
+```
+```{r,warning=FALSE,message=FALSE}
+## Construct a reduced data set containing only the selected predictor
+(indices <- as.logical(bss_fit_AIC$Subsets[pstar+1, 2:(p+1)]))
+```
+
+Out of the 9 predictors, **Cl.thickness, Cell.shape, Marg.adhesion, Bare.nuclei, Bl.cromatin,** and **Mitoses** predictors are selected using the Best Subset Selection for logistic regression.
+
+```{r,warning=FALSE,message=FALSE}
+BreastCancer_data_red <- data.frame(X1[, indices], y)
+## Obtain regression coefficients for this model
+logreg1_fit <- glm(y ~ ., data = BreastCancer_data_red, family = "binomial")
+summary(logreg1_fit)
+```
+
+Logistic regression model identifies five significant predictors for malignancy with p-values less than 0.05 with **Bare.nuclei** showing the strongest association, with a reasonable AIC value(96.867), which is used to compare this model against other potential models.
+
+**Training error**
+
+To evaluate the performance of logistic regression model with Best Subset Selection,computed the training confusion matrix and training error.
+
+```{r,warning=FALSE,message=FALSE}
+## Compute predicted probabilities:
+phat <-
+  predict(logreg1_fit, BreastCancer_data_red, type = "response")
+## Compute fitted (i.e. predicted) values:
+yhat <- ifelse(phat > 0.5, 1, 0)
+## Calculate confusion matrix:
+table(Observed = y, Predicted = yhat)
+```
+
+```{r,warning=FALSE,message=FALSE}
+## Calculate the training error:
+1 - mean(y == yhat)
+```
+
+The model misclassified about **3.11%** of the training data, correctly predicting the class for **96.89%** of instances. This low error rate suggests good performance on the training data.
+
+**Testing error**
+
+Using the fitted model to predict whether the class is benign or malignant in the test dataset.
+
+```{r,warning=FALSE,message=FALSE}
+## Compute fitted values for the validation data:
+phat_test <-
+  predict(logreg1_fit,test_data, type = "response")
+yhat_test <- ifelse(phat_test > 0.5, 1, 0)
+## Compute test error
+1 - mean(test_data$Class == yhat_test)
+```
+The model misclassifies approximately 65.69% of the test data, this suggests that the logistic regression model using best subset selection is not performing well on the test dataset. 
+
+### 2. Regularized Logistic Regression Using Lasso (Least Absolute Shrinkage and Selection Operator) penalty
+
+
+```{r,warning=FALSE,message=FALSE}
+## Load the glmnet package
+library(glmnet)
+## Choose grid of values for the tuning parameter
+grid <- 10^seq(-4, -1, length.out = 100)
+## Fit a model with LASSO penalty for each value of the tuning parameter
+lasso_fit <-
+  glmnet(X1, y, family = "binomial", alpha = 1, standardize = FALSE, lambda = grid)
+```
+
+```{r,echo=TRUE,fig.height=4,fig.width=6}
+## Examine the effect of the tuning parameter on the parameter estimates
+plot(lasso_fit, xvar = "lambda", col = rainbow(p), label = TRUE)
+# The plot shows how the coefficients of features change as the regularization parameter, represented by log(lambda).
+```
+
+```{r,warning=FALSE,message=FALSE}
+lasso_cv_fit <-
+  cv.glmnet(
+    X1, y, family = "binomial", alpha = 1,
+    standardize = FALSE, lambda = grid, type.measure = "class"
+  )
+```
+
+```{r,warning=FALSE,message=FALSE}
+# In order to visualise graphically how the test error varies with the tuning parameter, we can pass the object returned by the cv.glmnet function to the plot function
+plot(lasso_cv_fit)
+
+## Identify the optimal value for the tuning parameter
+(lambda_lasso_min <- lasso_cv_fit$lambda.min)
+```
+
+A LASSO logistic regression (alpha = 1) used 10-fold cross-validation to determine the optimal lambda value of **0.007054802** for regularization to enhance model performance.
+
+```{r,warning=FALSE,message=FALSE}
+which_lambda_lasso <- which(lasso_cv_fit$lambda == lambda_lasso_min)
+## Find the parameter estimates associated with optimal value of the tuning parameter
+coef(lasso_fit, s = lambda_lasso_min)
+```
+
+The LASSO model identifies **Bare.nuclei** as the most important feature for predicting malignancy. 
+
+Both Best Subset Selection and LASSO suggest that **Bare.nuclei**, **Bl.cromatin**, and **Cl.thickness** are significant predictors of malignancy, with **Mitoses** being less relevant. LASSO is more aggressive in feature selection, tending to zero out less important features like **Mitoses**, whereas Best Subset Selection retains all features and evaluates their significance.
+
+**Training error**
+
+```{r,warning=FALSE,message=FALSE}
+## Compute predicted probabilities:
+phat <- predict(lasso_fit, X1, s = lambda_lasso_min, type = "response")
+## Compute fitted (i.e. predicted) values:
+yhat <- ifelse(phat > 0.5, 1, 0)
+## Calculate confusion matrix:
+(confusion <- table(Observed = y, Predicted = yhat))
+```
+
+```{r,warning=FALSE,message=FALSE}
+## Calculate the training error:
+1 - mean(y == yhat)
+```
+The LASSO model showed a **training error of 2.56%**, meaning the model correctly classified **97.44%** of training instances.
+
+**Testing error**
+
+```{r,warning=FALSE,message=FALSE}
+train_cv_index <- createDataPartition(y, p = 0.8, list = FALSE)
+## Perform cross-validation over the training data to select tuning parameter
+lasso_cv_train <-
+  cv.glmnet(
+    X1[train_cv_index, ], y[train_cv_index], family = "binomial",
+    alpha = 1, standardize = FALSE, lambda = grid, type.measure = "class"
+  )
+## Identify the optimal value for the tuning parameter
+(lambda_lasso_min_train <- lasso_cv_train$lambda.min)
+
+which_lambda_lasso_train <- which(lasso_cv_train$lambda == lambda_lasso_min_train)
+
+# Get the total indices (1 to nrow(X1))
+total_indices <- 1:nrow(X1)
+# Get the test indices by excluding the train indices
+test_indices <- setdiff(total_indices, train_index)
+## Fit logistic regression model with LASSO penalty to training data:
+lasso_train <-
+  glmnet(
+    X1[train_cv_index, ], y[train_cv_index], family = "binomial",
+    alpha = 1, standardize = FALSE, lambda = lambda_lasso_min_train
+  )
+## Compute fitted values for the validation data:
+phat_test <- predict(lasso_train, X1[test_indices, ], s = lambda_lasso_min_train, 
+                     type = "response")
+yhat_test <- ifelse(phat_test > 0.5, 1, 0)
+```
+```{r,warning=FALSE,message=FALSE}
+## Compute test error
+1 - mean(y[test_indices] == yhat_test)
+```
+
+The LASSO model achieved a **test error of 1.87%**, demonstrating strong generalization to unseen data and effective prediction of malignancy.
+
+### 3. Discriminant Analysis (LDA and QDA)
+
+**Linear discriminant analysis**
+
+Linear Discriminant Analysis (LDA) classifies samples as benign or malignant by finding a linear combination of predictors that maximizes class separation. This approach aids in both classifying new samples and interpreting the importance of variables in distinguishing between the two classes.
+
+```{r,warning=FALSE,message=FALSE}
+# Define the predictors and the target variable
+predictors <- train_data[, c("Cl.thickness", "Cell.shape", "Marg.adhesion", "Bare.nuclei", "Bl.cromatin", "Mitoses")]
+response <- train_data$Class
+
+# Fit the LDA model
+library(MASS)  # Load the MASS package to use lda function
+library(nclSLR)
+#lda(group = response, x = predictors)
+linDA(variables = predictors, group = response)
+```
+The discriminant functions highlight the contribution of each predictor, such as cl.thickness and Bare.nuclei, in distinguishing between the classes. The model demonstrates high accuracy and effectively separates the two classes based on the provided features.
+
+For consistency with the logistic regression approach, we will apply the validation set method using the same training and validation data split.
+
+```{r,warning=FALSE,message=FALSE}
+## Fit the LDA classifier using the training data
+lda_train <- lda(Class ~ ., data = train_data)
+## Compute fitted values for the validation data
+lda_test <- predict(lda_train, test_data)
+yhat_test <- lda_test$class
+## Calculate (test) confusion matrix
+confusion <- table(Observed = test_data$Class, Predicted = yhat_test)
+
+## Calculate the test error
+1 - mean(test_data$Class == yhat_test)
+```
+The Linear Discriminant Analysis (LDA) model achieved strong performance, correctly classifying **88 benign** and **40 malignant** samples. However, it misclassified **7 malignant** as benign and **2 benign** as malignant. The overall test error rate was **6.57%**, with **93.43%** of test samples correctly classified, indicating reliable performance.
+
+**Quadratic discriminant analysis**
+
+```{r,warning=FALSE,message=FALSE}
+quaDA(variables = predictors, group = response)
+```
+The Quadratic Discriminant Analysis (QDA) model classifies samples as benign (Class 0) or malignant (Class 1) based on discriminant scores, assigning each sample to the class with the higher score. The model showed effective performance with minimal misclassification.
+
+```{r,warning=FALSE,message=FALSE}
+## Fit the QDA classifier using the training data
+qua_train <- qda(Class ~ ., data = train_data)
+## Compute fitted values for the validation data
+qua_test <- predict(qua_train, test_data)
+yhat_test1 <- qua_test$class
+## Calculate (test) confusion matrix
+confusion <- table(Observed = test_data$Class, Predicted = yhat_test1)
+
+## Calculate the test error
+1 - mean(test_data$Class == yhat_test1)
+```
+The Quadratic Discriminant Analysis (QDA) model correctly classified **82 benign** and **46 malignant** samples, with **8 benign** misclassified as malignant and **1 malignant** misclassified as benign. The test error rate was **6.57%**, indicating **93.43%** accuracy and strong classification performance.
+
+The results from the supervised learning models align with the EDA, confirming the importance of **Bare.nuclei**, **Cl.thickness**, and **Bl.cromatin** as key predictors of malignancy. These features were consistently selected in logistic regression and clustering, while **Mitoses**, showing weaker correlation in EDA, was less significant in the models, supporting the initial findings.
+
+## Conclusions and Discussion
+
+This analysis evaluated several models for predicting breast cancer malignancy, including Logistic Regression with Subset Selection, Regularized Logistic Regression (Lasso), and Discriminant Analysis methods (LDA and QDA). The goal was to identify a model that provides the most accurate predictions, particularly by evaluating performance on both training and test datasets. Based on the evaluation of various models, the LASSO model emerged as the best classifier for this task.
+
+The best model was selected based on its ability to generalize well to the test data, indicated by a low **test error rate** of approximately **1.87%**. This model was fitted using the **LASSO penalty**, with an optimal tuning parameter of **0.0087**. LASSO is effective here as it regularizes the model, shrinking less important coefficients to zero, which helps reduce complexity, mitigate overfitting, and improve generalization. The optimal lambda was chosen through cross-validation to minimize misclassification.
+
+When considering the predictors, the LASSO model highlighted a subset of important variables, specifically **Bare.nuclei**, **Bl.cromatin**, and **Cl.thickness**, which were found to have the greatest impact on predicting malignancy. These variables were consistently selected by both Best Subset Selection and LASSO, making them key features for our model. However, Mitoses was not selected as a significant predictor by the LASSO model, suggesting that its contribution to the model is minimal. The feature selection provided by LASSO ensures that only the most relevant predictors are included, which not only improves model performance but also reduces the risk of overfitting.
+
+The model’s misclassification errors primarily involve false negatives, where malignant cases are incorrectly predicted as benign, or false positives, where benign cases are incorrectly predicted as malignant. These errors are typical in medical diagnoses, and further evaluation is needed to balance the costs (e.g., the risk of missing a malignant case versus misdiagnosing a benign one). While the LASSO model provides low test error, it's important to consider these misclassifications and their potential implications in clinical settings.
+
+Regarding contradictions between methods, both Best Subset Selection and LASSO agreed on key predictors (**Bare.nuclei**, **Bl.cromatin**, and **Cl.thickness**), but LASSO was more aggressive in excluding irrelevant features like **Mitoses**. This contrast highlights the difference in feature selection: LASSO uses regularization to be more stringent, while Best Subset Selection evaluates all features without exclusion. Despite these differences, both methods identified the same core features, reinforcing the reliability of the results.
+
+The main scientific goal of this analysis was to develop a model capable of accurately predicting the malignancy of breast cancer. Based on the results, the LASSO model appears to fulfill this goal effectively, with a high predictive accuracy as evidenced by the low test error rate. The model provides valuable insights into which predictors are most important for distinguishing between benign and malignant cases.
+
+However, there are some limitations to this analysis. Firstly, the dataset is imbalanced, with a higher number of benign cases compared to malignant ones, which could influence the performance of the classifier. While the low misclassification rate suggests good model performance, the imbalance could lead to biased predictions. Techniques like oversampling, undersampling, or using metrics like the F1 score or ROC curve to assess model performance in the context of imbalanced data. Additionally, the models used in this analysis assume that the predictors are linearly related to the outcome, which may not always hold in real-world scenarios. Exploring more advanced techniques such as ensemble methods or non-linear classifiers could potentially improve the predictive power further.
+
+In conclusion, while the LASSO model provides strong predictive performance and successfully addresses the scientific goal, further improvements could be made by handling data imbalance and considering non-linear modeling techniques. These steps would help refine the model for real-world applications and increase its robustness.
